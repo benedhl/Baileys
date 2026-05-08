@@ -5,6 +5,15 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:
 
+# Mirror puro do WhiskeySockets/Baileys.
+# O fork tem N commits próprios (esse arquivo + deletes de workflows
+# do upstream que não rodam num mirror). Estratégia: rebase desses
+# commits em cima do upstream + force-push-with-lease. Cada execução
+# replica os commits fork-only em cima da última versão do upstream.
+#
+# Build do wpp-monitor usa @whiskeysockets/baileys via npm (pinned),
+# o fork existe só como backup/auditoria — força-push é seguro aqui.
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -16,13 +25,29 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sync master from upstream
+      - name: Configure git identity
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      - name: Rebase fork-only commits on top of upstream
         run: |
           git remote add upstream https://github.com/WhiskeySockets/Baileys.git || true
           git fetch upstream master --tags
           git checkout master
-          git merge --ff-only upstream/master || {
-            echo "Não foi fast-forward — provavelmente fork divergiu. Crie PR manualmente."
-            exit 1
-          }
-          git push origin master --tags
+
+          # Já estamos no head do upstream? Nada a fazer.
+          if [ "$(git rev-parse master)" = "$(git rev-parse upstream/master)" ]; then
+            echo "Master já idêntico ao upstream. Nothing to do."
+            exit 0
+          fi
+
+          # Rebase os commits fork-only em cima do upstream.
+          # Se rolar conflito (upstream reintroduzir arquivo que deletamos
+          # ou alterar arquivo que tocamos), o job falha — resolver
+          # manualmente no fork e re-rodar.
+          git rebase upstream/master
+
+      - name: Push (force-with-lease) + tags
+        run: |
+          git push origin master --force-with-lease --tags
