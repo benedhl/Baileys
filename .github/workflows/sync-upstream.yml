@@ -39,7 +39,10 @@ jobs:
           set -e
 
           git remote add upstream https://github.com/WhiskeySockets/Baileys.git || true
-          git fetch upstream master --tags
+          # Sem --tags: GITHUB_TOKEN não pode push tags que apontem pra
+          # commits que tocam .github/workflows (restrição do GitHub
+          # contra abuso de token). Tags ficam no upstream mesmo.
+          git fetch upstream master
           git checkout master
 
           # Já estamos no head do upstream? Nada a fazer.
@@ -83,6 +86,6 @@ jobs:
             fi
           fi
 
-      - name: Push (force-with-lease) + tags
+      - name: Push (force-with-lease)
         run: |
-          git push origin master --force-with-lease --tags
+          git push origin master --force-with-lease
