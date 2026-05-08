@@ -11,6 +11,10 @@ on:
 # commits em cima do upstream + force-push-with-lease. Cada execução
 # replica os commits fork-only em cima da última versão do upstream.
 #
+# Quando upstream MODIFICA um arquivo que a gente DELETOU (modify/delete
+# conflict), aplicamos "delete wins" automaticamente — a intenção é
+# manter o arquivo deletado independente do que upstream faça.
+#
 # Build do wpp-monitor usa @whiskeysockets/baileys via npm (pinned),
 # o fork existe só como backup/auditoria — força-push é seguro aqui.
 
@@ -32,6 +36,8 @@ jobs:
 
       - name: Rebase fork-only commits on top of upstream
         run: |
+          set -e
+
           git remote add upstream https://github.com/WhiskeySockets/Baileys.git || true
           git fetch upstream master --tags
           git checkout master
@@ -42,11 +48,40 @@ jobs:
             exit 0
           fi
 
-          # Rebase os commits fork-only em cima do upstream.
-          # Se rolar conflito (upstream reintroduzir arquivo que deletamos
-          # ou alterar arquivo que tocamos), o job falha — resolver
-          # manualmente no fork e re-rodar.
-          git rebase upstream/master
+          # Tenta o rebase. Se conflito modify/delete, resolve "delete wins".
+          if ! git rebase upstream/master; then
+            while [ -d .git/rebase-merge ]; do
+              # Files com modify/delete (DU = deleted by us; UD = deleted by them).
+              # Em ambos os casos preservamos a intenção do nosso commit (delete).
+              CONFLICTED=$(git status --porcelain | awk '/^(DU|UD) /{print $2}')
+
+              # Se não tem modify/delete mas o rebase travou, é conflito real
+              # (modificação concorrente em arquivo que tocamos) — aborta.
+              if [ -z "$CONFLICTED" ]; then
+                echo "::error::Conflito real em rebase (não modify/delete). Abortando."
+                git status --porcelain
+                git rebase --abort
+                exit 1
+              fi
+
+              echo "modify/delete detectado — aplicando delete wins:"
+              echo "$CONFLICTED" | while read f; do
+                echo "  rm $f"
+                git rm -f "$f" >/dev/null
+              done
+
+              # Continua o rebase (sem abrir editor)
+              GIT_EDITOR=true git rebase --continue || break
+            done
+
+            # Se ainda em meio a rebase, falhou em continuar — aborta
+            if [ -d .git/rebase-merge ]; then
+              echo "::error::Não foi possível continuar o rebase após auto-resolve."
+              git status
+              git rebase --abort
+              exit 1
+            fi
+          fi
 
       - name: Push (force-with-lease) + tags
         run: |
